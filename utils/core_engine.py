@@ -855,6 +855,73 @@ def normal_main_loop(args, stop_event: threading.Event):
             break
 
 
+async def perform_cpa_check(args, async_stop_event, loop):
+    print(f"[{ts()}] [INFO] 开始执行 CPA 仓库全量测活巡检...")
+    res = requests.get(
+        _normalize_cpa_auth_files_url(cfg.CPA_API_URL),
+        headers={"Authorization": f"Bearer {cfg.CPA_API_TOKEN}"},
+        timeout=20,
+    )
+    all_files = res.json().get("files", [])
+    codex_files = [
+        f for f in all_files
+        if "codex" in str(f.get("type", "")).lower()
+           or "codex" in str(f.get("provider", "")).lower()
+    ]
+    total_files = len(codex_files)
+
+    with ThreadPoolExecutor(max_workers=cfg.CPA_THREADS) as executor:
+        futures = [
+            loop.run_in_executor(executor, process_account_worker, i, total_files, item, args)
+            for i, item in enumerate(codex_files, 1)
+        ]
+        results = await asyncio.gather(*futures)
+
+    valid_count = sum(1 for r in results if r)
+    print(f"[{ts()}] [INFO] CPA 测活结束，当前有效数: {valid_count} / {total_files}")
+    return valid_count, total_files
+
+
+async def perform_sub2api_check(args, async_stop_event, loop, client):
+    print(f"[{ts()}] [INFO] 开始执行 Sub2API 仓库全量测活巡检...")
+    success, data = client.get_accounts(page=1, page_size=1000)
+    if not success:
+        print(f"[{ts()}] [ERROR] 获取 Sub2API 库存失败: {data}")
+        return 0, 0
+
+    account_list = data.get("data", {}).get("items", [])
+    total_files = len(account_list)
+
+    with ThreadPoolExecutor(max_workers=cfg.SUB2API_THREADS) as executor:
+        futures = [
+            loop.run_in_executor(executor, process_sub2api_worker, i, total_files, item, client, args)
+            for i, item in enumerate(account_list, 1)
+        ]
+        results = await asyncio.gather(*futures)
+
+    valid_count = sum(1 for r in results if r)
+    print(f"[{ts()}] [INFO] Sub2API 测活结束，当前有效数: {valid_count} / {total_files}")
+    return valid_count, total_files
+
+async def manual_check_main_loop(args, async_stop_event: asyncio.Event):
+    print("=" * 60)
+    print(f"\n[{ts()}] [系统] >>> 启动独立测活清理任务 <<<")
+    print("=" * 60)
+    loop = asyncio.get_running_loop()
+
+    if cfg.ENABLE_CPA_MODE:
+        await perform_cpa_check(args, async_stop_event, loop)
+    elif cfg.ENABLE_SUB2API_MODE:
+        client = Sub2APIClient(api_url=cfg.SUB2API_URL, api_key=cfg.SUB2API_KEY)
+        await perform_sub2api_check(args, async_stop_event, loop, client)
+    else:
+        print(f"[{ts()}] [WARNING] 当前未开启 CPA 或 Sub2API 模式，无法执行仓管测活。")
+
+    print(f"\n[{ts()}] [SUCCESS] 独立测活任务执行完毕！")
+    cfg.GLOBAL_STOP = True
+    async_stop_event.set()
+
+
 async def cpa_main_loop(args, async_stop_event: asyncio.Event):
     """CPA 智能仓管模式（接入发牌器，防止撞车）。"""
     print("=" * 60)
@@ -869,30 +936,25 @@ async def cpa_main_loop(args, async_stop_event: asyncio.Event):
     loop = asyncio.get_running_loop()
 
     while not async_stop_event.is_set():
-        print(f"\n[{ts()}] [INFO] 开始执行仓库例行巡检与测活...")
         try:
-            res = requests.get(
-                _normalize_cpa_auth_files_url(cfg.CPA_API_URL),
-                headers={"Authorization": f"Bearer {cfg.CPA_API_TOKEN}"},
-                timeout=20,
-            )
-            all_files    = res.json().get("files", [])
-            codex_files  = [
-                f for f in all_files
-                if "codex" in str(f.get("type", "")).lower()
-                or "codex" in str(f.get("provider", "")).lower()
-            ]
-            total_files = len(codex_files)
-
-            with ThreadPoolExecutor(max_workers=cfg.CPA_THREADS) as executor:
-                futures = [
-                    loop.run_in_executor(executor, process_account_worker, i, total_files, item, args)
-                    for i, item in enumerate(codex_files, 1)
+            if cfg.CPA_AUTO_CHECK:
+                valid_count, total_files = await perform_cpa_check(args, async_stop_event, loop)
+            else:
+                print(f"\n[{ts()}] [INFO] 自动测活已关闭，直接读取云端列表进行补发判断...")
+                res = requests.get(
+                    _normalize_cpa_auth_files_url(cfg.CPA_API_URL),
+                    headers={"Authorization": f"Bearer {cfg.CPA_API_TOKEN}"},
+                    timeout=20,
+                )
+                all_files = res.json().get("files", [])
+                codex_files = [
+                    f for f in all_files
+                    if "codex" in str(f.get("type", "")).lower()
+                       or "codex" in str(f.get("provider", "")).lower()
                 ]
-                results = await asyncio.gather(*futures)
-
-            valid_count = sum(1 for r in results if r)
-            print(f"[{ts()}] [INFO] 巡检结束，当前仓库有效数: {valid_count}")
+                total_files = len(codex_files)
+                valid_count = total_files
+                print(f"[{ts()}] [INFO] 当前云端总数: {total_files} (未开启自动巡检，默认全部视为有效)")
 
             if valid_count < cfg.MIN_ACCOUNTS_THRESHOLD:
                 need_to_reg          = cfg.BATCH_REG_COUNT
@@ -1225,6 +1287,25 @@ class RegEngine:
             return False
         return self.current_thread is not None and self.current_thread.is_alive()
 
+    def start_check(self, args):
+        if self.is_running(): return
+        self._force_stopped = False
+        cfg.GLOBAL_STOP = False
+        self.thread_stop_event.clear()
+        self.current_thread = threading.Thread(
+            target=self._run_check_in_thread, args=(args,), daemon=True
+        )
+        self.current_thread.start()
+
+    def _run_check_in_thread(self, args):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        try:
+            self.async_stop_event = asyncio.Event()
+            self.loop.run_until_complete(manual_check_main_loop(args, self.async_stop_event))
+        finally:
+            self.loop.close()
+            self._force_stopped = True
 
 if __name__ == "__main__":
     main()

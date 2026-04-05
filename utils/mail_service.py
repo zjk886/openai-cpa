@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 import socks
 from curl_cffi import requests
 from utils import config as cfg
+from utils.ai_service import AIService
 luckmail_lock = threading.Lock()
 
 _CM_TOKEN_CACHE: Optional[str] = None
@@ -24,6 +25,16 @@ _CM_TOKEN_CACHE: Optional[str] = None
 _thread_data = threading.local()
 _orig_sleep = time.sleep
 LOCAL_USED_PIDS = set()
+AI_NAME_POOL = []
+AI_KW_POOL = []
+FIRST_NAMES = [
+    "james", "john", "robert", "michael", "william", "david", "richard", "joseph", "thomas", "charles",
+    "christopher", "daniel", "matthew", "anthony", "mark", "donald", "steven", "paul", "andrew", "joshua"
+]
+LAST_NAMES = [
+    "smith", "johnson", "williams", "brown", "jones", "garcia", "miller", "davis", "rodriguez", "martinez",
+    "hernandez", "lopez", "gonzalez", "wilson", "anderson", "thomas", "taylor", "moore", "jackson", "martin"
+]
 
 def _safe_set_tag(lm_service, p_id, tag_id):
     """带重试机制的异步打标，防止网络波动导致打标失败变成死循环号"""
@@ -109,15 +120,25 @@ def get_cm_token(proxies=None) -> Optional[str]:
         print(f"[{cfg.ts()}] [ERROR] CloudMail 接口请求异常: {e}")
     return None
 
+def _get_ai_data_package():
+    global AI_NAME_POOL, AI_KW_POOL
+    ai_enabled = getattr(cfg, 'AI_ENABLE_PROFILE', False)
+
+    if ai_enabled:
+        ai = AIService()
+        if len(AI_NAME_POOL) < 5: AI_NAME_POOL.extend(ai.fetch_names())
+        if len(AI_KW_POOL) < 10: AI_KW_POOL.extend(ai.fetch_keywords())
+        if AI_NAME_POOL:
+            return AI_NAME_POOL.pop(0), True
+
+    letters = "".join(random.choices(string.ascii_lowercase, k=5))
+    digits = "".join(random.choices(string.digits, k=3))
+    return f"{letters}{digits}", False
+
 def get_email_and_token(proxies: Any = None) -> tuple:
     """兼容五种邮箱模式的地址创建，返回 (email, token_or_id)。"""
     if getattr(cfg, 'GLOBAL_STOP', False): return None, None
     _thread_data.last_attempt_email = None
-    
-    letters = "".join(random.choices(string.ascii_lowercase, k=5))
-    digits  = "".join(random.choices(string.digits, k=random.randint(1, 3)))
-    suffix  = "".join(random.choices(string.ascii_lowercase, k=random.randint(1, 3)))
-    prefix  = letters + digits + suffix
 
     mode = cfg.EMAIL_API_MODE
     mail_proxies = proxies if cfg.USE_PROXY_FOR_EMAIL else None
@@ -199,6 +220,12 @@ def get_email_and_token(proxies: Any = None) -> tuple:
             print(f"[{cfg.ts()}] [ERROR] LuckMail 流程异常: {e}")
             return None, None
 
+    ai_switch_on = getattr(cfg, 'AI_ENABLE_PROFILE', False)
+    if ai_switch_on:
+        print(f"[{cfg.ts()}] [AI-状态] 已开启 AI 智能邮箱域名信息增强...")
+
+    prefix, ai_enabled = _get_ai_data_package()
+
     if cfg.ENABLE_SUB_DOMAINS:
         sticky = getattr(_thread_data, 'sticky_domain', None)
         if sticky:
@@ -209,7 +236,7 @@ def get_email_and_token(proxies: Any = None) -> tuple:
             if not main_list:
                 print(f"[{cfg.ts()}] [ERROR] 未配置主域名池，无法捏造子域！")
                 return None, None
-                
+
             selected_main = random.choice(main_list)
             if getattr(cfg, 'RANDOM_SUB_DOMAIN_LEVEL', False):
                 level = random.randint(1, 7)
@@ -218,8 +245,15 @@ def get_email_and_token(proxies: Any = None) -> tuple:
                     level = int(getattr(cfg, 'SUB_DOMAIN_LEVEL', 1))
                 except:
                     level = 1
-            
-            random_parts = [''.join(random.choices(string.ascii_lowercase + string.digits, k=8)) for _ in range(level)]
+
+            random_parts = []
+            for _ in range(level):
+                if ai_enabled and AI_KW_POOL:
+                    kw = AI_KW_POOL.pop(0)
+                    random_parts.append(f"{kw}-{''.join(random.choices(string.ascii_lowercase + string.digits, k=4))}")
+                else:
+                    random_parts.append(''.join(random.choices(string.ascii_lowercase + string.digits, k=8)))
+
             selected_domain = ".".join(random_parts) + f".{selected_main}"
             _thread_data.sticky_domain = selected_domain
     else:

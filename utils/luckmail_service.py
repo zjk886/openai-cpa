@@ -1,12 +1,17 @@
 import re
 import sys
+import time
+import random
+import threading
 from pathlib import Path
 from curl_cffi import requests
 from typing import Optional, Any
 from utils import config as cfg
 
 _LUCKMAIL_CLIENT_CLASS_CACHE = None
-
+_LUCKMAIL_API_LOCK = threading.Lock()
+_LUCKMAIL_LAST_REQ_TIME = 0.0
+_LUCKMAIL_REQ_INTERVAL = 2.0
 
 def _load_luckmail_client_class():
     global _LUCKMAIL_CLIENT_CLASS_CACHE
@@ -78,23 +83,58 @@ class LuckMailService:
         if self.preferred_domain: payload["domain"] = self.preferred_domain
         if self.email_type == "google_variant" and self.variant_mode: payload["variant_mode"] = self.variant_mode
 
-        try:
-            resp = requests.post(api_url, headers=headers, json=payload, timeout=60)
-            res_data = resp.json()
-            if resp.status_code != 200 or res_data.get("code") != 0:
-                raise Exception(f"购号失败: {res_data.get('message', resp.text)}")
+        max_retries = 5
+        global _LUCKMAIL_LAST_REQ_TIME
 
-            data_field = res_data.get("data", {})
-            item = data_field.get("purchases", [{}])[0] if "purchases" in data_field else data_field
-            email = str(self._extract_field(item, "email_address") or "").strip().lower()
-            token = str(self._extract_field(item, "token") or "").strip()
-            p_id = self._extract_field(item, "id")
+        for attempt in range(max_retries):
+            try:
+                with _LUCKMAIL_API_LOCK:
+                    now = time.time()
+                    elapsed = now - _LUCKMAIL_LAST_REQ_TIME
+                    if elapsed < _LUCKMAIL_REQ_INTERVAL:
 
-            if p_id and auto_tag and tag_id:
-                self.set_email_tag(p_id, tag_id)
-            return email, token, p_id
-        except Exception as e:
-            raise Exception(f"LuckMail 购号异常: {e}")
+                        time.sleep(_LUCKMAIL_REQ_INTERVAL - elapsed)
+                    _LUCKMAIL_LAST_REQ_TIME = time.time()
+
+                resp = requests.post(
+                    api_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=30,
+                    impersonate="chrome110"
+                )
+
+                if resp.status_code in [429, 502, 503, 504]:
+                    print(f"[{cfg.ts()}] [LuckMail] 网关限流 ({resp.status_code})，正在进行第 {attempt + 1} 次重试...")
+                    time.sleep(2 * (attempt + 1))
+                    continue
+
+                res_data = resp.json()
+
+                if res_data.get("code") != 0:
+                    msg = res_data.get("message", resp.text)
+
+                    if "频繁" in msg or "稍后重试" in msg or "limit" in msg.lower():
+                        print(f"[{cfg.ts()}] [LuckMail] 触发业务限频: {msg}，正在退避排队...")
+                        time.sleep(3)
+                        continue
+                    else:
+                        raise Exception(msg)
+
+                data_field = res_data.get("data", {})
+                item = data_field.get("purchases", [{}])[0] if "purchases" in data_field else data_field
+                email = str(self._extract_field(item, "email_address") or "").strip().lower()
+                token = str(self._extract_field(item, "token") or "").strip()
+                p_id = self._extract_field(item, "id")
+
+                if p_id and auto_tag and tag_id:
+                    self.set_email_tag(p_id, tag_id)
+                return email, token, p_id
+
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise Exception(f"LuckMail 购号异常 (已重试{max_retries}次): {e}")
+                time.sleep(1.5)
 
     def bulk_purchase(self, quantity: int = 1, auto_tag: bool = False, tag_id: int = None) -> list:
         api_url = f"{self.base_url}/api/v1/openapi/email/purchase"

@@ -786,6 +786,27 @@ createApp({
             } finally {
                 this.isManualBuying = false;
             }
+        },
+        async startManualCheck() {
+            if(this.isRunning) {
+                this.showToast('请先停止当前运行的任务', 'warning');
+                return;
+            }
+            try {
+                const res = await this.authFetch('/api/start_check', {
+                    method: 'POST'
+                });
+                const data = await res.json();
+
+                if(data.code === 200) {
+                    this.showToast(data.message, 'success');
+                    this.pollStats();
+                } else {
+                    this.showToast(data.message || '启动测活失败', 'error');
+                }
+            } catch (err) {
+                this.showToast('网络请求异常', 'error');
+            }
         }
     }
 }).mount('#app');

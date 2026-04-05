@@ -90,6 +90,7 @@ MIN_REMAINING_WEEKLY_PERCENT: int = 80
 REMOVE_ON_LIMIT_REACHED: bool = False
 REMOVE_DEAD_ACCOUNTS: bool = False
 CPA_THREADS: int = 10
+CPA_AUTO_CHECK: bool = True
 CHECK_INTERVAL_MINUTES: int = 60
 ENABLE_TOKEN_REVIVE: bool = False
 SUB_DOMAIN_LEVEL: int = 1
@@ -106,6 +107,9 @@ SUB2API_MIN_REMAINING_WEEKLY_PERCENT: int = 80
 SUB2API_REMOVE_ON_LIMIT_REACHED: bool = True
 SUB2API_REMOVE_DEAD_ACCOUNTS: bool = True
 SUB2API_ENABLE_TOKEN_REVIVE: bool = False
+SUB2API_AUTO_CHECK: bool = True
+
+
 LUCKMAIL_PREFERRED_DOMAIN: str = ""
 LUCKMAIL_EMAIL_TYPE: str = ""
 LUCKMAIL_VARIANT_MODE: str = ""
@@ -132,6 +136,12 @@ _clash_enable: bool = False
 _clash_pool_mode: bool = False
 WARP_PROXY_LIST: list = []
 PROXY_QUEUE: queue.Queue = queue.Queue()
+
+AI_API_BASE: str = ""
+AI_API_KEY: str = ""
+AI_MODEL: str = "gpt-3.5-turbo"
+AI_ENABLE_PROFILE: bool = False
+
 
 def reload_all_configs():
     global _c
@@ -160,6 +170,8 @@ def reload_all_configs():
     global HERO_SMS_ENABLED, HERO_SMS_API_KEY, HERO_SMS_BASE_URL, HERO_SMS_COUNTRY, HERO_SMS_SERVICE
     global HERO_SMS_AUTO_PICK_COUNTRY, HERO_SMS_REUSE_PHONE, HERO_SMS_MAX_PRICE
     global HERO_SMS_MIN_BALANCE, HERO_SMS_MAX_TRIES, HERO_SMS_POLL_TIMEOUT_SEC
+    global AI_API_BASE, AI_API_KEY, AI_MODEL, AI_ENABLE_PROFILE
+    global CPA_AUTO_CHECK, SUB2API_AUTO_CHECK
 
     _c = init_config()
 
@@ -211,6 +223,7 @@ def reload_all_configs():
     CPA_THREADS      = _cpa.get("threads", 10)
     CHECK_INTERVAL_MINUTES  = _cpa.get("check_interval_minutes", 60)
     ENABLE_TOKEN_REVIVE     = _cpa.get("enable_token_revive", False)
+    CPA_AUTO_CHECK = _cpa.get("auto_check", True)
 
     _sub2api = _c.get("sub2api_mode", {})
     ENABLE_SUB2API_MODE = _sub2api.get("enable", False)
@@ -225,6 +238,7 @@ def reload_all_configs():
     SUB2API_REMOVE_ON_LIMIT_REACHED = _sub2api.get("remove_on_limit_reached", True)
     SUB2API_REMOVE_DEAD_ACCOUNTS = _sub2api.get("remove_dead_accounts", True)
     SUB2API_ENABLE_TOKEN_REVIVE = _sub2api.get("enable_token_revive", False)
+    SUB2API_AUTO_CHECK = _sub2api.get("auto_check", True)
 
     _normal          = _c.get("normal_mode", {})
     NORMAL_SLEEP_MIN = _normal.get("sleep_min", 5)
@@ -288,6 +302,12 @@ def reload_all_configs():
     except:
         HERO_SMS_POLL_TIMEOUT_SEC = 120
 
+
+    _ai = _c.get("ai_service", {})
+    AI_API_BASE = _ai.get("api_base", "https://api.openai.com/v1")
+    AI_API_KEY = _ai.get("api_key", "")
+    AI_MODEL = _ai.get("model", "gpt-3.5-turbo")
+    AI_ENABLE_PROFILE = _ai.get("enable_profile", False)
 
 
     reload_proxy_config()

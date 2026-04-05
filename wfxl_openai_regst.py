@@ -781,6 +781,16 @@ def api_luckmail_bulk_buy(req: LuckMailBulkBuyReq, token: str = Depends(verify_t
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+
+@app.post("/api/start_check")
+async def start_check_api(token: str = Depends(verify_token)):
+    if engine.is_running():
+        return {"code": 400, "message": "系统正在运行中，请先停止主任务！"}
+    default_proxy = getattr(core_engine.cfg, 'DEFAULT_PROXY', None)
+    args = DummyArgs(proxy=default_proxy if default_proxy else None)
+    engine.start_check(args)
+    return {"code": 200, "message": "独立测活指令已下发！"}
+
 if __name__ == "__main__":
     try: reload_all_configs()
     except: pass
